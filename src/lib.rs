@@ -10,7 +10,8 @@ use futures::StreamExt;
 use futures::{FutureExt, SinkExt, Stream};
 use thiserror::Error;
 
-use retryiter::{retry_iter, RetryIter};
+use retryiter::{IntoRetryIter, ItemStatus};
+use std::ops::DerefMut;
 
 #[derive(Error, Debug)]
 enum InternalServiceError {
@@ -61,16 +62,17 @@ where
             let irval = init_fn();
             let aus_irval = AssertUnwindSafe(irval);
 
-            let mut iter = retry_iter(self, retries);
+            let mut iter = self.retries( retries);
 
             loop {
-                let concurrent_task = futures::stream::iter(iter.clone())
+                let concurrent_task = futures::stream::iter(iter.deref_mut())
                     .map(|v| Ok((AssertUnwindSafe(aus_irval.0.clone()), v)))
-                    .try_for_each_concurrent(max_concurrency.get(), |(iv, (id, v))| {
+                    .try_for_each_concurrent(max_concurrency.get(), |(iv, mut item)| {
                         let mut sender = sender.clone();
                         let task_fn = &task_fn;
 
-                        let mut iter = iter.clone();
+                        let v = item.value();
+                        item.set_default(ItemStatus::NotDone);
 
                         async move {
                             let result = task_fn(AssertUnwindSafe(iv.0.clone()), v.clone())
@@ -79,8 +81,7 @@ where
 
                             match result {
                                 Ok(v) => {
-                                    iter.succeeded(id)
-                                        .expect("id not found in in_progress list!");
+                                    item.succeeded();
                                     let result = sender.send(v).await;
                                     match result {
                                         Err(send_err) => {
@@ -91,8 +92,7 @@ where
                                 }
                                 Err(_) => {
                                     // Panicked!!
-                                    iter.failed(id, ())
-                                        .expect("id not found in in_progress list!");
+                                    item.failed(None);
                                     Err(InternalServiceError::Panicked)
                                 }
                             }
@@ -102,7 +102,6 @@ where
                 match concurrent_task.await {
                     Ok(_) => break,
                     Err(InternalServiceError::Panicked) => {
-                        iter.requeue_in_progress_items();
                         continue;
                     }
                     Err(InternalServiceError::ResultSendError(_)) => {
@@ -126,7 +125,7 @@ where
 #[must_use = "CobustStream do nothing unless you start reading values out of it"]
 pub struct CobustStream<RVAL: 'static, IVAL: 'static> {
     receiver: Pin<Box<Receiver<RVAL>>>,
-    task: Pin<Box<dyn Future<Output = Vec<(IVAL, ())>>>>,
+    task: Pin<Box<dyn Future<Output = Vec<(IVAL, Option<()>)>>>>,
     task_done: bool,
     panicked_items: Box<Vec<IVAL>>,
 }

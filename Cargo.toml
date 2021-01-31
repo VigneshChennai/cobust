@@ -1,6 +1,6 @@
 [package]
 name = "cobust"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["vignesh"]
 edition = "2018"
 description = "A simple library for recovering from panic on async codebase with retries"
@@ -10,7 +10,7 @@ license-file = "LICENSE"
 [dependencies]
 futures = "0.3"
 thiserror = "1"
-retryiter = "0.1"
+retryiter = "0.2"
 
 
 [dev-dependencies]
